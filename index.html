@@ -324,32 +324,21 @@ select option{background:var(--bg3)}
   <div class="modal" id="m-add-svc" style="display:none">
     <div class="modal-handle"></div><h2>Agendar Serviço</h2>
     <div class="col">
-      <div><label>Tipo de serviço</label>
-        <select id="sv-tipo" onchange="onTipoChange()">
-          <option value="">Selecione...</option>
-          <option value="Troca de óleo" data-h="1">Troca de óleo (1h)</option>
-          <option value="Revisão geral" data-h="3">Revisão geral (3h)</option>
-          <option value="Alinhamento" data-h="1">Alinhamento (1h)</option>
-          <option value="Balanceamento" data-h="1">Balanceamento (1h)</option>
-          <option value="Freios" data-h="2">Freios (2h)</option>
-          <option value="Suspensão" data-h="2">Suspensão (2h)</option>
-          <option value="Troca de pneus" data-h="1">Troca de pneus (1h)</option>
-          <option value="Funilaria" data-h="4">Funilaria (4h)</option>
-          <option value="Outro">Outro serviço</option>
-        </select>
-      </div>
-      <div id="sv-custom-wrap" style="display:none"><label>Nome do serviço</label><input type="text" id="sv-custom" placeholder="Ex: Radiador"></div>
-      <div><label>Duração (horas)</label><input type="number" id="sv-dur" min="0.5" max="8" step="0.5" placeholder="Ex: 2"></div>
+      <div><label>Nome do serviço</label><input type="text" id="sv-nome" placeholder="Ex: Troca de óleo, Funilaria..."></div>
+      <div><label>Duração (horas)</label><input type="number" id="sv-dur" min="0.5" max="8" step="0.5" placeholder="Ex: 2" oninput="autoCheckDisp()"></div>
       <div><label>Cliente / Placa do veículo</label><input type="text" id="sv-cliente" placeholder="Ex: João Silva / ABC-1234"></div>
       <div class="row">
-        <div class="f1"><label>Data</label><input type="date" id="sv-data"></div>
-        <div class="f1"><label>Horário início</label><input type="time" id="sv-hora" min="08:00" max="17:00"></div>
+        <div class="f1"><label>Data</label><input type="date" id="sv-data" onchange="autoCheckDisp()"></div>
+        <div class="f1"><label>Horário início</label><input type="time" id="sv-hora" min="08:00" max="17:00" onchange="autoCheckDisp()"></div>
       </div>
       <div id="sv-aviso" style="display:none" class="info-box"></div>
-      <button class="btn btn-g" onclick="checkDisp()" style="font-size:13px"><i class="ti ti-search"></i> Verificar disponibilidade</button>
+      <div id="sv-slots" style="display:none">
+        <div style="font-size:12px;color:var(--text3);margin-bottom:6px">Próximos horários disponíveis:</div>
+        <div id="sv-slots-list"></div>
+      </div>
       <div class="row" style="gap:8px">
         <button class="btn btn-g f1" onclick="closeM('m-add-svc')">Cancelar</button>
-        <button class="btn btn-p f1" onclick="saveSvc()">Agendar</button>
+        <button class="btn btn-p f1" id="sv-btn-agendar" onclick="saveSvc()">Agendar</button>
       </div>
     </div>
   </div>
@@ -387,7 +376,15 @@ function go(s){
 function openM(id){
   document.getElementById('ov').classList.add('open');
   document.getElementById(id).style.display='block';
-  if(id==='m-add-svc'){document.getElementById('sv-data').value=agD.value;document.getElementById('sv-hora').value='08:00';document.getElementById('sv-aviso').style.display='none';}
+  if(id==='m-add-svc'){
+    document.getElementById('sv-data').value=agD.value;
+    document.getElementById('sv-hora').value='08:00';
+    document.getElementById('sv-aviso').style.display='none';
+    document.getElementById('sv-slots').style.display='none';
+    document.getElementById('sv-btn-agendar').disabled=false;
+    document.getElementById('sv-btn-agendar').style.opacity='1';
+    if(document.getElementById('sv-nome'))document.getElementById('sv-nome').value='';
+  }
   if(id==='m-add-todo'){document.getElementById('td-date').value=new Date().toISOString().slice(0,10);S.editTodoId=null;document.getElementById('todo-m-title').textContent='Nova Tarefa';}
 }
 function closeM(id){document.getElementById(id).style.display='none';document.getElementById('ov').classList.remove('open')}
@@ -640,72 +637,145 @@ function renderMes(ds){
 }
 function delSvc(id){if(!confirm('Excluir serviço?'))return;S.servicos=S.servicos.filter(s=>s.id!==id);renderAg()}
 
-// SERVIÇO
-function onTipoChange(){
-  const sel=document.getElementById('sv-tipo');
-  const opt=sel.options[sel.selectedIndex];
-  document.getElementById('sv-custom-wrap').style.display=sel.value==='Outro'?'block':'none';
-  const h=opt.getAttribute('data-h');
-  if(h)document.getElementById('sv-dur').value=h;
+// SERVIÇO — lógica de conflito por hora exata
+function getOccupiedBlocks(ds){
+  // Retorna array de {start, end} em horas decimais para cada serviço do dia
+  return S.servicos.filter(s=>s.data===ds).map(s=>{
+    const sh=parseInt(s.hora.split(':')[0])+(parseInt((s.hora.split(':')[1]||0))/60);
+    let end=sh+(parseFloat(s.dur)||0);
+    // Se atravessa o almoço, empurra a parte da tarde
+    if(sh<12&&end>12){end=end+(14-12)} // pula o intervalo
+    return{start:sh,end};
+  });
 }
-function findNextSlot(fromDs,dur){
-  let d=new Date(fromDs+'T12:00:00');
-  for(let i=0;i<60;i++){
-    d.setDate(d.getDate()+1);
-    const dw=d.getDay();if(dw===0||dw===6)continue;
-    const ds=d.toISOString().slice(0,10);
-    if(getWorkH(ds)-getUsedH(ds)>=dur){
-      const srvs=S.servicos.filter(s=>s.data===ds).sort((a,b)=>a.hora.localeCompare(b.hora));
-      let sh=8;
-      if(srvs.length){const last=srvs[srvs.length-1];sh=parseInt(last.hora.split(':')[0])+(parseFloat(last.dur)||0);if(sh>=12&&sh<14)sh=14}
-      return{date:ds,time:sh.toString().padStart(2,'0')+':00'};
-    }
+function isSlotFree(ds,startH,dur){
+  // Verifica se o horário startH por dur horas está livre no dia ds
+  // Regra: horários válidos 08-12 e 14-18, sem sobreposição com outros serviços
+  if(startH<8||startH>=18)return false;
+  const endH=startH+dur;
+  // Não pode cruzar o almoço sem parar às 12
+  if(startH<12&&endH>12)return false;
+  if(startH>=12&&startH<14)return false;
+  if(endH>18)return false;
+  // Verifica sobreposição com serviços existentes
+  const srvs=S.servicos.filter(s=>s.data===ds);
+  for(const s of srvs){
+    const sh=parseInt(s.hora.split(':')[0])+(parseInt((s.hora.split(':')[1]||0))/60);
+    const se=sh+(parseFloat(s.dur)||0);
+    // Há conflito se os intervalos se sobrepõem
+    if(startH<se&&endH>sh)return false;
   }
-  return null;
+  return true;
 }
-function checkDisp(){
+function getNextFreeSlot(fromDs,dur){
+  // Busca próximo slot livre: primeiro no mesmo dia, depois dias seguintes (até 60 dias)
+  const tryDay=(ds)=>{
+    const dw=new Date(ds+'T12:00:00').getDay();
+    if(dw===0||dw===6)return null;
+    // Tenta cada hora válida em ordem
+    for(const h of[8,9,10,11,14,15,16,17]){
+      if(h+dur<=12||h>=14){
+        if(isSlotFree(ds,h,dur))return{date:ds,time:h.toString().padStart(2,'0')+':00'};
+      }
+    }
+    return null;
+  };
+  // Tenta o dia atual primeiro
+  const same=tryDay(fromDs);
+  if(same)return[same];
+  // Busca os próximos 3 slots disponíveis nos próximos 60 dias
+  const slots=[];
+  let d=new Date(fromDs+'T12:00:00');
+  for(let i=0;i<60&&slots.length<3;i++){
+    d.setDate(d.getDate()+1);
+    const ds=d.toISOString().slice(0,10);
+    const slot=tryDay(ds);
+    if(slot)slots.push(slot);
+  }
+  return slots;
+}
+function autoCheckDisp(){
   const ds=document.getElementById('sv-data').value;
   const hora=document.getElementById('sv-hora').value;
   const dur=parseFloat(document.getElementById('sv-dur').value)||0;
   const av=document.getElementById('sv-aviso');
-  if(!ds||!dur){av.style.display='none';return}
+  const slotsWrap=document.getElementById('sv-slots');
+  const btn=document.getElementById('sv-btn-agendar');
+  if(!ds||!dur||!hora){av.style.display='none';slotsWrap.style.display='none';return}
   const dw=new Date(ds+'T12:00:00').getDay();
   if(dw===0||dw===6){
     av.style.display='block';av.className='info-box info-no';
-    const nx=findNextSlot(ds,dur);
-    av.innerHTML='<i class="ti ti-x" style="vertical-align:-2px;margin-right:4px"></i>Atendemos apenas seg–sex.'+(nx?`<br><br><b>Próximo slot:</b> ${fmtDate(nx.date)} às ${nx.time}`:'');
-    return;
+    av.innerHTML='<i class="ti ti-x" style="vertical-align:-2px;margin-right:4px"></i>Não atendemos aos finais de semana.';
+    btn.disabled=true;btn.style.opacity='0.5';
+    showNextSlots(ds,dur);return;
   }
-  const used=getUsedH(ds),avail=8-used;
-  if(dur>avail){
-    av.style.display='block';av.className='info-box info-no';
-    const nx=findNextSlot(ds,dur);
-    av.innerHTML=`<i class="ti ti-alert-triangle" style="vertical-align:-2px;margin-right:4px"></i>Sem espaço. Usado: ${used}h de 8h.`+(nx?`<br><br><b>Sugestão:</b> ${fmtDate(nx.date)} às ${nx.time}`:'');
+  const startH=parseInt(hora.split(':')[0])+(parseInt((hora.split(':')[1]||0))/60);
+  if(isSlotFree(ds,startH,dur)){
+    av.style.display='block';av.className='info-box info-ok';
+    const endH=startH+dur;
+    const endStr=Math.floor(endH).toString().padStart(2,'0')+':'+(((endH%1)*60)||'00').toString().padStart(2,'0');
+    av.innerHTML=`<i class="ti ti-check" style="vertical-align:-2px;margin-right:4px"></i>Horário livre! Das ${hora} às ${endStr}.`;
+    slotsWrap.style.display='none';
+    btn.disabled=false;btn.style.opacity='1';
   }else{
-    const horaN=hora?parseInt(hora.split(':')[0]):8;
-    const fim=horaN+dur;
-    if(fim>12&&horaN<14){
-      av.style.display='block';av.className='info-box info-warn';
-      av.innerHTML='<i class="ti ti-clock" style="vertical-align:-2px;margin-right:4px"></i>Cruza o intervalo 12h–14h. Considere iniciar às 14:00.';
+    av.style.display='block';av.className='info-box info-no';
+    if(startH>=12&&startH<14){
+      av.innerHTML='<i class="ti ti-clock" style="vertical-align:-2px;margin-right:4px"></i>Intervalo de almoço (12h–14h). Escolha outro horário.';
     }else{
-      av.style.display='block';av.className='info-box info-ok';
-      av.innerHTML=`<i class="ti ti-check" style="vertical-align:-2px;margin-right:4px"></i>Disponível! ${avail}h livres neste dia.`;
+      av.innerHTML='<i class="ti ti-alert-triangle" style="vertical-align:-2px;margin-right:4px"></i>Horário ocupado ou inválido para este dia.';
     }
+    btn.disabled=true;btn.style.opacity='0.5';
+    showNextSlots(ds,dur);
   }
 }
+function showNextSlots(ds,dur){
+  const slotsWrap=document.getElementById('sv-slots');
+  const slotsList=document.getElementById('sv-slots-list');
+  const slots=getNextFreeSlot(ds,dur);
+  if(!slots.length){slotsWrap.style.display='none';return}
+  slotsWrap.style.display='block';
+  slotsList.innerHTML=slots.map(sl=>`
+    <div onclick="applySlot('${sl.date}','${sl.time}')" style="
+      padding:10px 12px;background:var(--bg3);border:1px solid var(--border2);
+      border-radius:var(--radius-sm);margin-bottom:6px;cursor:pointer;
+      display:flex;justify-content:space-between;align-items:center;
+      transition:border-color .15s
+    ">
+      <div>
+        <div style="font-size:13px;font-weight:500;color:var(--accent2)">${fmtDateLong(sl.date)}</div>
+        <div style="font-size:12px;color:var(--text3)">às ${sl.time}</div>
+      </div>
+      <div style="font-size:11px;color:var(--green);background:rgba(45,212,160,.1);padding:3px 8px;border-radius:4px">Usar este</div>
+    </div>`).join('');
+}
+function applySlot(date,time){
+  document.getElementById('sv-data').value=date;
+  document.getElementById('sv-hora').value=time;
+  autoCheckDisp();
+}
+function fmtDateLong(d){
+  if(!d)return'';
+  const dt=new Date(d+'T12:00:00');
+  const days=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const months=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  return days[dt.getDay()]+', '+dt.getDate()+' '+months[dt.getMonth()];
+}
+function checkDisp(){autoCheckDisp()}
 function saveSvc(){
-  const tipo=document.getElementById('sv-tipo').value;
-  const custom=document.getElementById('sv-custom').value.trim();
-  const nome=tipo==='Outro'?custom:tipo;
+  const nome=document.getElementById('sv-nome').value.trim();
   const dur=parseFloat(document.getElementById('sv-dur').value)||0;
   const cliente=document.getElementById('sv-cliente').value.trim();
   const ds=document.getElementById('sv-data').value;
   const hora=document.getElementById('sv-hora').value;
-  if(!nome||!dur||!cliente||!ds||!hora)return;
+  if(!nome||!dur||!cliente||!ds||!hora){alert('Preencha todos os campos!');return}
   const dw=new Date(ds+'T12:00:00').getDay();
   if(dw===0||dw===6){alert('Atendemos apenas segunda a sexta!');return}
-  if(getUsedH(ds)+dur>8){if(!confirm('Capacidade excedida. Agendar mesmo assim?'))return}
+  const startH=parseInt(hora.split(':')[0])+(parseInt((hora.split(':')[1]||0))/60);
+  if(!isSlotFree(ds,startH,dur)){alert('Este horário está ocupado. Escolha um dos horários sugeridos.');return}
   S.servicos.push({id:uid(),nome,dur,cliente,data:ds,hora});
+  document.getElementById('sv-nome').value='';
+  document.getElementById('sv-cliente').value='';
+  document.getElementById('sv-dur').value='';
   closeM('m-add-svc');renderAg();
 }
 
